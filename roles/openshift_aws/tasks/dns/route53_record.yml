@@ -1,0 +1,40 @@
+---
+- debug: msg="{{ l_dnsrecords_dict_item }}"
+
+- name: querying elb
+  ec2_elb_facts:
+    names: "{{ l_dnsrecords_dict_item.value }}"
+    region: "{{ openshift_aws_region }}"
+  register: elb_facts
+  when:
+    - "'elb' in l_dnsrecords_dict_item.kind"
+    - "'CNAME' in l_dnsrecords_dict_item.type"
+
+- name: querying ec2
+  ec2_instance_facts:
+    filters:
+      "tag:clusterid": "{{ openshift_aws_clusterid }}"
+      "tag:aws:autoscaling:groupName": "{{ l_node_group_name }}"
+      "tag:deployment_serial": "{{ l_deployment_serial }}"
+      instance-state-name: "running"
+    region: "{{ openshift_aws_region }}"
+  register: ec2_facts
+  when:
+    - "'ec2' in l_dnsrecords_dict_item.kind"
+    - "'NS' in l_dnsrecords_dict_item.type"
+    - "'master' in l_node_group_name"
+
+- name: creating record
+  route53:
+    command: create
+    overwrite: yes
+    private_zone: "{{ (l_dns_dict_item.key == 'internal') | ternary('yes','no') }}"
+    record: "{{ l_dnsrecords_dict_item.name }}.{{ l_dns_dict_item.value['zone'] }}"
+    type: "{{ l_dnsrecords_dict_item.type }}"
+    ttl: 300
+    value: "{{ value }}"
+    zone: "{{ l_dns_dict_item.value['zone'] }}"
+  vars:
+    value: "{% if 'CNAME' in l_dnsrecords_dict_item.type %} {{ elb_facts.elbs[0].dns_name }} \
+            {% elif 'NS' in l_dnsrecords_dict_item.type %} {{ ec2_facts.instances | map(attribute='private_dns_name') | list | join(',') }} \
+            {% endif %}"
