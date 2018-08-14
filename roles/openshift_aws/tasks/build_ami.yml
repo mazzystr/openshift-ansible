@@ -1,0 +1,63 @@
+---
+- name: Require openshift_aws_base_ami
+  fail:
+    msg: "A base AMI is required for AMI building.  Please ensure  `openshift_aws_base_ami` is defined."
+  when: openshift_aws_base_ami is undefined
+
+- name: "Alert user to variables needed and their values - {{ item.name }}"
+  debug:
+    msg: "{{ item.msg }}"
+  with_items:
+  - name: openshift_aws_clusterid
+    msg: "openshift_aws_clusterid={{ openshift_aws_clusterid | default('default') }}"
+  - name: openshift_aws_region
+    msg: "openshift_aws_region={{ openshift_aws_region | default('us-east-1') }}"
+
+- include_tasks: vpc_and_subnet_id.yml
+
+- include_tasks: provision_instance_facts.yml
+  with_items: "{{ l_instance_config }}"
+  vars:
+    l_instance_config: "{{ openshift_aws_instance_config }}"
+  loop_control:
+    loop_var: l_openshift_aws_instance
+  when: "'buildami' in l_openshift_aws_instance"
+
+- name: include buildami instance creation
+  include_tasks: provision_instance.yml
+  with_items: "{{ l_instance_config }}"
+  vars:
+    l_instance_config: "{{ openshift_aws_instance_config }}"
+  loop_control:
+    loop_var: l_openshift_aws_instance
+  when: "'buildami' in l_openshift_aws_instance"
+
+- name: set the user to perform installation
+  set_fact:
+    ansible_ssh_user: "{{ openshift_aws_build_ami_ssh_user | default(ansible_ssh_user) }}"
+    openshift_node_image_prep_packages:
+    - cloud-init
+    - cloud-utils-growpart
+
+- name: fetch newly created instances
+  ec2_instance_facts:
+    region: "{{ openshift_aws_region }}"
+    filters:
+      "tag:Name": "{{ openshift_aws_base_ami_name }}"
+      instance-state-name: running
+  register: instancesout
+  retries: 20
+  delay: 3
+  until: instancesout.instances|length > 0
+
+- name: wait for ssh to become available
+  wait_for:
+    port: 22
+    host: "{{ instancesout.instances[0].public_ip_address }}"
+    timeout: 300
+    search_regex: OpenSSH
+
+- name: add host to nodes
+  add_host:
+    groups: nodes,g_new_node_hosts
+    name: "{{ instancesout.instances[0].public_dns_name }}"
